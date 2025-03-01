@@ -6,6 +6,7 @@ import { createServer as createViteServer } from "vite";
 import "dotenv/config";
 import Replicate from "replicate";
 import { createClient } from '@supabase/supabase-js';
+import axios from 'axios';
 
 const supabase = createClient(
   process.env.SUPABASE_URL,
@@ -128,48 +129,112 @@ app.post("/generate-image", async (req, res) => {
   }
 });
 
-app.post("/edit-image", async (req, res) => {
+async function imageUrlToBase64(imageUrl) {
   try {
-    const form = new FormData();
-    form.append("image_file", req.body.imageFile);
-    form.append("mask", req.body.mask);
-    form.append("prompt", req.body.prompt);
-    form.append("model", "V_1");
-
-    const response = await fetch("https://api.ideogram.ai/edit", {
-      method: "POST",
-      headers: {
-        "Api-Key": ideogramApiKey,
-      },
-      body: form,
+    const response = await axios.get(imageUrl, {
+      responseType: 'arraybuffer',
+      maxContentLength: 50 * 1024 * 1024, // 50MB max
+      timeout: 30000 // 30 seconds timeout
     });
-
-    const { data } = await response.json();
-    res.json(data);
+    return Buffer.from(response.data).toString('base64');
   } catch (error) {
-    console.error("Image editing error:", error);
-    res.status(500).json({ error: "Failed to edit image" });
+    console.error('Error fetching image:', error.message);
+    throw new Error(`Failed to fetch image: ${error.message}`);
   }
-});
+}
 
 app.post("/get-segments", async (req, res) => {
   try {
-    const output = await replicate.run(
-      "meta/sam-2:fe97b453a6455861e3bac769b441ca1f1086110da7466dbb65cf1eecfd60dc83",
+    if (!req.body.currentImageUrl) {
+      throw new Error('No image URL provided');
+    }
+
+    console.log('Fetching image from:', req.body.currentImageUrl);
+    const imageBase64 = await imageUrlToBase64(req.body.currentImageUrl);
+    const segmentPrompt = req.body.prompt || "object";
+    
+    console.log('Making request to Segmind API...');
+    const response = await axios.post(
+      "https://api.segmind.com/v1/automatic-mask-generator",
       {
-        input: {
-          image: req.body.imageUrl,
-        },
+        prompt: segmentPrompt,
+        image: imageBase64,
+        threshold: 0.2,
+        invert_mask: false,
+        return_mask: true,
+        grow_mask: 10,
+        seed: Math.floor(Math.random() * 1000000),
+        base64: false
       },
+      {
+        headers: {
+          'x-api-key': process.env.SEGMIND_API_KEY,
+          'Content-Type': 'application/json'
+        },
+        timeout: 30000 // 30 seconds timeout
+      }
     );
 
+    if (!response.data || !response.data.combined_mask) {
+      throw new Error('Invalid response from Segmind API');
+    }
+
+    // Store combined mask
+    const timestamp = Date.now();
+    console.log('Fetching combined mask from:', response.data.combined_mask);
+    const combinedMaskBuffer = await (await fetch(response.data.combined_mask)).arrayBuffer();
+    const combinedMaskFilename = `mask_combined_${timestamp}.png`;
+    
+    const { error: combinedError } = await supabase.storage
+      .from('masks')
+      .upload(combinedMaskFilename, Buffer.from(combinedMaskBuffer), {
+        contentType: 'image/png',
+        cacheControl: '3600'
+      });
+
+    if (combinedError) throw combinedError;
+
+    // Get combined mask public URL
+    const { data: { publicUrl: combinedMaskUrl } } = supabase.storage
+      .from('masks')
+      .getPublicUrl(combinedMaskFilename);
+
+    // Store individual masks and get their URLs
+    const individualMaskUrls = await Promise.all(
+      (response.data.masks || []).map(async (maskUrl, index) => {
+        console.log(`Fetching individual mask ${index} from:`, maskUrl);
+        const maskBuffer = await (await fetch(maskUrl)).arrayBuffer();
+        const maskFilename = `mask_individual_${timestamp}_${index}.png`;
+        
+        const { error: maskError } = await supabase.storage
+          .from('masks')
+          .upload(maskFilename, Buffer.from(maskBuffer), {
+            contentType: 'image/png',
+            cacheControl: '3600'
+          });
+
+        if (maskError) throw maskError;
+
+        const { data: { publicUrl } } = supabase.storage
+          .from('masks')
+          .getPublicUrl(maskFilename);
+
+        return publicUrl;
+      })
+    );
+
+    // Return the Supabase URLs instead of the original URLs
     res.json({
-      combined_mask: output.combined_mask,
-      individual_masks: output.individual_masks,
+      combined_mask: combinedMaskUrl,
+      individual_masks: individualMaskUrls
     });
   } catch (error) {
-    console.error("Segment analysis error:", error);
-    res.status(500).json({ error: "Failed to analyze image segments" });
+    console.error("Segment analysis error:", error.response?.data || error.message);
+    console.error("Full error:", error);
+    res.status(500).json({ 
+      error: "Failed to analyze image segments",
+      details: error.response?.data || error.message
+    });
   }
 });
 

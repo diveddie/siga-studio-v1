@@ -139,7 +139,7 @@ export default function App() {
         </div>
       </nav>
       <main className="absolute top-16 left-0 right-0 bottom-0">
-        <section className="absolute top-0 left-0 right-[380px] bottom-0 flex">
+        {/* <section className="absolute top-0 left-0 right-[380px] bottom-0 flex">
           <section className="absolute top-0 left-0 right-0 bottom-32 px-4 overflow-y-auto">
             <EventLog events={events} />
           </section>
@@ -153,9 +153,17 @@ export default function App() {
               isSessionActive={isSessionActive}
             />
           </section>
-        </section>
-        <section className="absolute top-0 w-[380px] right-0 bottom-0 p-4 pt-0 overflow-y-auto">
+        </section> */}
+        <section className="absolute top-0 w-full right-0 bottom-0 p-4 pt-0 overflow-y-auto">
           <ToolPanel
+            sendClientEvent={sendClientEvent}
+            sendTextMessage={sendTextMessage}
+            events={events}
+            isSessionActive={isSessionActive}
+          />
+          <SessionControls
+            startSession={startSession}
+            stopSession={stopSession}
             sendClientEvent={sendClientEvent}
             sendTextMessage={sendTextMessage}
             events={events}

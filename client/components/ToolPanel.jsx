@@ -8,6 +8,14 @@ const imageGenerationFunctionDescription = `
 Call this function when a user asks to generate, create, or make an image.
 `;
 
+const imageEditFunctionDescription = `
+Call this function when a user asks to edit or modify an existing image.
+`;
+
+const imageSegmentFunctionDescription = `
+Call this function when a user asks to mask a specific object in an image.
+`;
+
 const sessionUpdate = {
   type: "session.update",
   session: {
@@ -81,18 +89,22 @@ const sessionUpdate = {
       },
       {
         type: "function",
-        name: "get_image_segments",
-        description: "Call this function when a user asks to get the image segments.",
+        name: "create_image_mask",
+        description: "Call this function when a user asks to mask a specific object in an image",
         parameters: {
           type: "object",
           strict: true,
           properties: {
-            imageUrl: {
+            currentImageUrl: {
               type: "string",
-              description: "URL of the image to analyze for segments"
+              description: "URL of the current image to analyze for segments"
+            },
+            prompt: {
+              type: "string",
+              description: "What to look for in the image (e.g., 'car', 'person', 'dog')"
             }
           },
-          required: ["imageUrl"]
+          required: ["currentImageUrl", "prompt"]
         }
       }
     ],
@@ -100,132 +112,60 @@ const sessionUpdate = {
   },
 };
 
-function ImageGenerator({ prompt, guidance = 3.5 }) {
-  const [imageUrl, setImageUrl] = useState(null);
-  const [error, setError] = useState(null);
-
-  useEffect(() => {
-    async function generateImage() {
-      try {
-        const response = await fetch("/generate-image", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ prompt, guidance }),
-        });
-
-        const data = await response.json();
-        if (data.error) {
-          setError(data.error);
-        } else {
-          setImageUrl(data[0].url);
-        }
-      } catch (err) {
-        setError("Failed to generate image");
-        console.error(err);
-      }
-    }
-
-    generateImage();
-  }, [prompt, guidance]);
-
-  return (
-    <div className="flex flex-col gap-2">
-      <p>Prompt: {prompt}</p>
-      {error && <p className="text-red-500">{error}</p>}
-      {imageUrl && (
-        <img
-          src={imageUrl}
-          alt={prompt}
-          className="w-full rounded-lg shadow-lg"
-        />
-      )}
-    </div>
-  );
-}
-
-function FunctionCallOutput({ functionCallOutput }) {
-  if (functionCallOutput.name === "display_color_palette") {
-    const { theme, colors } = JSON.parse(functionCallOutput.arguments);
-    const colorBoxes = colors.map((color) => (
-      <div
-        key={color}
-        className="w-full h-16 rounded-md flex items-center justify-center border border-gray-200"
-        style={{ backgroundColor: color }}
-      >
-        <p className="text-sm font-bold text-black bg-slate-100 rounded-md p-2 border border-black">
-          {color}
-        </p>
-      </div>
-    ));
-
-    return (
-      <div className="flex flex-col gap-2">
-        <p>Theme: {theme}</p>
-        {colorBoxes}
-        <pre className="text-xs bg-gray-100 rounded-md p-2 overflow-x-auto">
-          {JSON.stringify(functionCallOutput, null, 2)}
-        </pre>
-      </div>
-    );
-  }
-
-  if (functionCallOutput.name === "generate_image") {
-    const { prompt } = JSON.parse(functionCallOutput.arguments);
-    return (
-      <div className="flex flex-col gap-2">
-        <ImageGenerator prompt={prompt} />
-        <pre className="text-xs bg-gray-100 rounded-md p-2 overflow-x-auto">
-          {JSON.stringify(functionCallOutput, null, 2)}
-        </pre>
-      </div>
-    );
-  }
-
-  if (functionCallOutput.name === "get_image_segments") {
-    const { imageUrl } = JSON.parse(functionCallOutput.arguments);
-    return (
-      <div className="flex flex-col gap-2">
-        <ImageSegmenter imageUrl={imageUrl} />
-        <pre className="text-xs bg-gray-100 rounded-md p-2 overflow-x-auto">
-          {JSON.stringify(functionCallOutput, null, 2)}
-        </pre>
-      </div>
-    );
-  }
-
-  return null;
-}
-
-function ImageSegmenter({ imageUrl }) {
+function ImageSegmenter({ imageUrl, prompt, shouldAnalyze }) {
   const [segments, setSegments] = useState(null);
   const [error, setError] = useState(null);
-  const [loading, setLoading] = useState(true);
+  const [loading, setLoading] = useState(false);
+  const [hasAnalyzed, setHasAnalyzed] = useState(false);
 
   useEffect(() => {
     async function getSegments() {
+      if (!imageUrl || !shouldAnalyze || hasAnalyzed) {
+        return;
+      }
+
+      setLoading(true);
       try {
         const response = await fetch("/get-segments", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ imageUrl }),
+          body: JSON.stringify({ 
+            currentImageUrl: imageUrl,
+            prompt: prompt || "object"
+          })
         });
-
+        
+        if (!response.ok) {
+          throw new Error(`HTTP error! status: ${response.status}`);
+        }
+        
         const data = await response.json();
         if (data.error) {
-          setError(data.error);
-        } else {
-          setSegments(data);
+          throw new Error(data.error);
         }
-      } catch (err) {
-        setError("Failed to analyze image segments");
-        console.error(err);
+        setSegments(data);
+        setHasAnalyzed(true);
+      } catch (error) {
+        console.error("Failed to get segments:", error);
+        setError(error.message);
       } finally {
         setLoading(false);
       }
     }
 
     getSegments();
-  }, [imageUrl]);
+  }, [imageUrl, prompt, shouldAnalyze, hasAnalyzed]);
+
+  // Reset hasAnalyzed when shouldAnalyze changes to false
+  useEffect(() => {
+    if (!shouldAnalyze) {
+      setHasAnalyzed(false);
+    }
+  }, [shouldAnalyze]);
+
+  if (!shouldAnalyze) {
+    return null;
+  }
 
   if (loading) {
     return <div>Analyzing image segments...</div>;
@@ -233,6 +173,10 @@ function ImageSegmenter({ imageUrl }) {
 
   if (error) {
     return <div className="text-red-500">{error}</div>;
+  }
+
+  if (!segments) {
+    return <div>No segments found</div>;
   }
 
   return (
@@ -271,6 +215,32 @@ export default function ToolPanel({
 }) {
   const [functionAdded, setFunctionAdded] = useState(false);
   const [functionCallOutput, setFunctionCallOutput] = useState(null);
+  const [currentImageUrl, setCurrentImageUrl] = useState(null);
+  const [error, setError] = useState(null);
+
+  // Define generateImage before useEffect
+  const generateImage = async (prompt, guidance = 3.5) => {
+    try {
+      const response = await fetch("/generate-image", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ prompt, guidance }),
+      });
+
+      const data = await response.json();
+      if (data.error) {
+        setError(data.error);
+        return false;
+      } else {
+        setCurrentImageUrl(data[0].url);
+        return true;
+      }
+    } catch (err) {
+      setError("Failed to generate image");
+      console.error(err);
+      return false;
+    }
+  };
 
   useEffect(() => {
     if (!events || events.length === 0) return;
@@ -287,12 +257,35 @@ export default function ToolPanel({
       mostRecentEvent.response.output
     ) {
       mostRecentEvent.response.output.forEach((output) => {
-        if (
-          output.type === "function_call" &&
-          (output.name === "display_color_palette" ||
-            output.name === "generate_image")
-        ) {
-          setFunctionCallOutput(output);
+        if (output.type === "function_call") {
+          // Clear previous function call output when switching functions
+          setFunctionCallOutput(null);
+          
+          if (output.name === "generate_image") {
+            const { prompt, guidance = 3.5 } = JSON.parse(output.arguments);
+            generateImage(prompt, guidance).then(() => {
+              // Only set the function call output after the image is generated
+              setFunctionCallOutput(output);
+            });
+          } else if (output.name === "create_image_mask") {
+            if (!currentImageUrl) {
+              console.error("No image available for segmentation");
+              return;
+            }
+            // Set the function call output with the current image URL
+            setFunctionCallOutput({
+              ...output,
+              arguments: JSON.stringify({
+                currentImageUrl,
+                prompt: JSON.parse(output.arguments).prompt
+              })
+            });
+          } else {
+            // Handle other function calls (like color palette)
+            setFunctionCallOutput(output);
+          }
+
+          // Send follow-up instructions
           setTimeout(() => {
             sendClientEvent({
               type: "response.create",
@@ -300,24 +293,86 @@ export default function ToolPanel({
                 instructions:
                   output.name === "display_color_palette"
                     ? "ask for feedback about the color palette - don't repeat the colors, just ask if they like the colors."
-                    : "ask for feedback about the generated image - don't repeat the prompt, just ask if they like the image.",
+                    : output.name === "generate_image"
+                    ? "ask for feedback about the generated image - don't repeat the prompt, just ask if they like the image."
+                    : output.name === "create_image_mask"
+                    ? "ask if they'd like to edit any of the segments."
+                    : "",
               },
             });
           }, 500);
         }
       });
     }
-  }, [events]);
+  }, [events, currentImageUrl, generateImage, functionAdded, sendClientEvent]);
 
+  // Reset function
   useEffect(() => {
     if (!isSessionActive) {
       setFunctionAdded(false);
       setFunctionCallOutput(null);
+      setCurrentImageUrl(null);
+      setError(null);
     }
   }, [isSessionActive]);
 
+  const FunctionCallOutput = ({ functionCallOutput }) => {
+    if (!functionCallOutput) return null;
+    const args = JSON.parse(functionCallOutput.arguments);
+
+    return (
+      <div className="flex flex-col gap-6">
+        {/* Color Palette Section */}
+        {args.colors && args.theme && (
+          <div className="flex flex-col gap-2">
+            <h3 className="font-bold">Color Palette</h3>
+            <p>Theme: {args.theme}</p>
+            <div className="grid grid-cols-5 gap-2">
+              {args.colors.map((color) => (
+                <div
+                  key={color}
+                  className="w-full h-16 rounded-md flex items-center justify-center border border-gray-200"
+                  style={{ backgroundColor: color }}
+                >
+                  <p className="text-sm font-bold text-black bg-slate-100 rounded-md p-2 border border-black">
+                    {color}
+                  </p>
+                </div>
+              ))}
+            </div>
+          </div>
+        )}
+
+        {/* Generated Image Section */}
+        {currentImageUrl && (
+          <div className="flex flex-col gap-2">
+            <h3 className="font-bold">Generated Image</h3>
+            {error && <p className="text-red-500">{error}</p>}
+            <img
+              src={currentImageUrl}
+              alt="Generated image"
+              className="w-full rounded-lg shadow-lg"
+            />
+          </div>
+        )}
+
+        {/* Image Segmentation Section */}
+        {currentImageUrl && (
+          <div className="flex flex-col gap-2">
+            <h3 className="font-bold">Image Segmentation</h3>
+            <ImageSegmenter 
+              imageUrl={currentImageUrl} 
+              prompt={args.prompt}
+              shouldAnalyze={functionCallOutput.name === "create_image_mask"}
+            />
+          </div>
+        )}
+      </div>
+    );
+  };
+
   return (
-    <section className="h-full w-full flex flex-col gap-4">
+    <section className="h-[calc(100vh-150px)] w-full flex flex-col gap-4 mb-4">
       <div className="h-full bg-gray-50 rounded-md p-4">
         <h2 className="text-lg font-bold">Tools Panel</h2>
         {isSessionActive ? (
