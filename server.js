@@ -6,6 +6,9 @@ import "dotenv/config";
 const app = express();
 const port = process.env.PORT || 3000;
 const apiKey = process.env.OPENAI_API_KEY;
+const ideogramApiKey = process.env.IDEOGRAM_API_KEY;
+
+app.use(express.json());
 
 // Configure Vite middleware for React client
 const vite = await createViteServer({
@@ -37,6 +40,32 @@ app.get("/token", async (req, res) => {
   } catch (error) {
     console.error("Token generation error:", error);
     res.status(500).json({ error: "Failed to generate token" });
+  }
+});
+
+app.post("/generate-image", async (req, res) => {
+  try {
+    const response = await fetch("https://api.ideogram.ai/generate", {
+      method: "POST",
+      headers: {
+        "Api-Key": ideogramApiKey,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        image_request: {
+          prompt: req.body.prompt,
+          aspect_ratio: req.body.aspect_ratio || "ASPECT_1_1",
+          model: "V_2",
+          magic_prompt_option: "AUTO",
+        },
+      }),
+    });
+
+    const { data } = await response.json();
+    res.json(data);
+  } catch (error) {
+    console.error("Image generation error:", error);
+    res.status(500).json({ error: "Failed to generate image" });
   }
 });
 
