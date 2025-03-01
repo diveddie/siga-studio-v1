@@ -48,24 +48,60 @@ const sessionUpdate = {
               type: "string",
               description: "Detailed description of the image to generate",
             },
-            aspect_ratio: {
-              type: "string",
-              enum: ["ASPECT_1_1", "ASPECT_16_10", "ASPECT_10_16"],
-              description: "Aspect ratio of the generated image",
-              default: "ASPECT_1_1",
-            },
+            guidance: {
+              type: "number",
+              description: "Guidance scale for image generation (higher values make the image more closely match the prompt)",
+              default: 3.5,
+              minimum: 1,
+              maximum: 20
+            }
           },
           required: ["prompt"],
         },
       },
+      {
+        type: "function",
+        name: "edit_image",
+        description: "Call this function when a user asks to edit or modify an existing image",
+        parameters: {
+          type: "object",
+          strict: true,
+          properties: {
+            imageUrl: {
+              type: "string",
+              description: "URL of the image to edit"
+            },
+            prompt: {
+              type: "string",
+              description: "Description of the desired edits"
+            }
+          },
+          required: ["imageUrl", "prompt"]
+        }
+      },
+      {
+        type: "function",
+        name: "get_image_segments",
+        description: "Call this function when a user asks to get the image segments.",
+        parameters: {
+          type: "object",
+          strict: true,
+          properties: {
+            imageUrl: {
+              type: "string",
+              description: "URL of the image to analyze for segments"
+            }
+          },
+          required: ["imageUrl"]
+        }
+      }
     ],
     tool_choice: "auto",
   },
 };
 
-function ImageGenerator({ prompt }) {
+function ImageGenerator({ prompt, guidance = 3.5 }) {
   const [imageUrl, setImageUrl] = useState(null);
-  const [isGenerating, setIsGenerating] = useState(false);
   const [error, setError] = useState(null);
 
   useEffect(() => {
@@ -74,7 +110,7 @@ function ImageGenerator({ prompt }) {
         const response = await fetch("/generate-image", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ prompt }),
+          body: JSON.stringify({ prompt, guidance }),
         });
 
         const data = await response.json();
@@ -90,7 +126,7 @@ function ImageGenerator({ prompt }) {
     }
 
     generateImage();
-  }, [prompt]);
+  }, [prompt, guidance]);
 
   return (
     <div className="flex flex-col gap-2">
@@ -100,7 +136,7 @@ function ImageGenerator({ prompt }) {
         <img
           src={imageUrl}
           alt={prompt}
-          className="w-full rounded-md border border-gray-200"
+          className="w-full rounded-lg shadow-lg"
         />
       )}
     </div>
@@ -145,7 +181,87 @@ function FunctionCallOutput({ functionCallOutput }) {
     );
   }
 
+  if (functionCallOutput.name === "get_image_segments") {
+    const { imageUrl } = JSON.parse(functionCallOutput.arguments);
+    return (
+      <div className="flex flex-col gap-2">
+        <ImageSegmenter imageUrl={imageUrl} />
+        <pre className="text-xs bg-gray-100 rounded-md p-2 overflow-x-auto">
+          {JSON.stringify(functionCallOutput, null, 2)}
+        </pre>
+      </div>
+    );
+  }
+
   return null;
+}
+
+function ImageSegmenter({ imageUrl }) {
+  const [segments, setSegments] = useState(null);
+  const [error, setError] = useState(null);
+  const [loading, setLoading] = useState(true);
+
+  useEffect(() => {
+    async function getSegments() {
+      try {
+        const response = await fetch("/get-segments", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ imageUrl }),
+        });
+
+        const data = await response.json();
+        if (data.error) {
+          setError(data.error);
+        } else {
+          setSegments(data);
+        }
+      } catch (err) {
+        setError("Failed to analyze image segments");
+        console.error(err);
+      } finally {
+        setLoading(false);
+      }
+    }
+
+    getSegments();
+  }, [imageUrl]);
+
+  if (loading) {
+    return <div>Analyzing image segments...</div>;
+  }
+
+  if (error) {
+    return <div className="text-red-500">{error}</div>;
+  }
+
+  return (
+    <div className="flex flex-col gap-4">
+      <div className="grid grid-cols-2 gap-4">
+        <div>
+          <h3 className="font-bold mb-2">Original Image</h3>
+          <img src={imageUrl} alt="Original" className="w-full rounded-lg" />
+        </div>
+        <div>
+          <h3 className="font-bold mb-2">Combined Segments</h3>
+          <img src={segments.combined_mask} alt="Combined segments" className="w-full rounded-lg" />
+        </div>
+      </div>
+      <div>
+        <h3 className="font-bold mb-2">Individual Segments</h3>
+        <div className="grid grid-cols-3 gap-2">
+          {segments.individual_masks.map((mask, index) => (
+            <img 
+              key={index} 
+              src={mask} 
+              alt={`Segment ${index + 1}`} 
+              className="w-full rounded-lg"
+            />
+          ))}
+        </div>
+      </div>
+    </div>
+  );
 }
 
 export default function ToolPanel({
